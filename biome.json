@@ -1,13 +1,44 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.3.14/schema.json",
-  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
   "files": {
     "includes": ["**", "!**/dist", "!**/node_modules", "!**/coverage", "!**/vendor"]
   },
-  "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 110 },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 110
+  },
   "linter": {
     "enabled": true,
-    "rules": { "recommended": true, "suspicious": { "noExplicitAny": "error" } }
+    "rules": {
+      "recommended": true,
+      "suspicious": {
+        "noExplicitAny": "error"
+      }
+    }
   },
-  "javascript": { "formatter": { "quoteStyle": "single", "semicolons": "always" } }
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "semicolons": "always"
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["packages/core/src/config/resolve.ts", "packages/core/src/config/resolve.test.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noTemplateCurlyInString": "off"
+          }
+        }
+      }
+    }
+  ]
 }

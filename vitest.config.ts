@@ -9,7 +9,11 @@ export default defineConfig({
     // stale dist silently tests yesterday's code — the first run of this suite failed with
     // "cannot read properties of undefined" because a schema added minutes earlier had never been
     // compiled. A test that can pass against code that no longer exists is not a test.
-    alias: { '@omnitech/devflow-contracts': src('contracts'), '@omnitech/devflow-core': src('core') },
+    alias: {
+      '@omnitech/devflow-contracts': src('contracts'),
+      '@omnitech/devflow-core': src('core'),
+      '@omnitech/devflow-adapters': src('adapters'),
+    },
   },
   test: {
     // Every package's tests, one runner. A second config is how a suite starts being invisible to

@@ -1,0 +1,26 @@
+{
+  "name": "@omnitech/devflow-adapters",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --force"
+  },
+  "dependencies": {
+    "@omnitech/devflow-contracts": "workspace:*",
+    "@omnitech/devflow-core": "workspace:*",
+    "@ast-grep/napi": "^0.40.0",
+    "zod": "^4.4.3"
+  }
+}
