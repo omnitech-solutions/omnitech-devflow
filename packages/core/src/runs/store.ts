@@ -9,9 +9,20 @@ import { fold, type RunView } from './fold.js';
  * would eventually be asked to use them, and the day it was, current state would have two possible
  * answers again.
  */
+/**
+ * `Omit` over a discriminated union collapses it into one object with only the shared keys, so
+ * `Omit<RunEvent, 'seq'>` accepts `kind` and nothing else. Distributing over the union first keeps
+ * every variant's own fields — caught by the compiler the moment a caller tried to append a real
+ * event, which is the argument for a typecheck gate beside a test gate.
+ */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+/** A run event as a caller writes it: the store assigns seq, at and runId. */
+export type NewRunEvent = DistributiveOmit<RunEvent, 'seq' | 'at' | 'runId'>;
+
 export interface RunEventStore {
   /** Appends. Assigns `seq` itself so two writers cannot pick the same one. */
-  append(runId: RunId, event: Omit<RunEvent, 'seq' | 'at' | 'runId'>): Promise<RunEvent>;
+  append(runId: RunId, event: NewRunEvent): Promise<RunEvent>;
   read(runId: RunId): Promise<readonly RunEvent[]>;
   list(): Promise<readonly RunId[]>;
 }
@@ -22,7 +33,7 @@ export class MemoryRunEventStore implements RunEventStore {
 
   constructor(private readonly clock: Clock) {}
 
-  async append(runId: RunId, event: Omit<RunEvent, 'seq' | 'at' | 'runId'>): Promise<RunEvent> {
+  async append(runId: RunId, event: NewRunEvent): Promise<RunEvent> {
     const log = this.runs.get(runId) ?? [];
     // seq is assigned here, never by the caller. A caller-chosen seq is a caller-chosen collision.
     const full = { ...event, seq: log.length, at: this.clock.now().toISOString(), runId } as RunEvent;

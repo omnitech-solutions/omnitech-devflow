@@ -1,28 +1,30 @@
 {
-  "name": "@omnitech/devflow-core",
+  "name": "@omnitech/devflow",
   "version": "0.0.1",
   "type": "module",
+  "bin": {
+    "devflow": "./bin/devflow.js"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./testing": {
-      "types": "./dist/testing.d.ts",
-      "import": "./dist/testing.js"
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "bin"
   ],
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --force"
   },
   "dependencies": {
+    "@omnitech/devflow-adapters": "workspace:*",
     "@omnitech/devflow-contracts": "workspace:*",
+    "@omnitech/devflow-core": "workspace:*",
     "zod": "^4.4.3"
   }
 }

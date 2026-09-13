@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { type RunEvent, type RunId, runEventSchema } from '@omnitech/devflow-contracts';
-import type { Clock, RunEventStore } from '@omnitech/devflow-core';
+import type { Clock, NewRunEvent, RunEventStore } from '@omnitech/devflow-core';
 
 /**
  * The run log on disk, one JSON object per line.
@@ -22,7 +22,7 @@ export class JsonlRunEventStore implements RunEventStore {
     return join(this.dir, runId, 'events.jsonl');
   }
 
-  async append(runId: RunId, event: Omit<RunEvent, 'seq' | 'at' | 'runId'>): Promise<RunEvent> {
+  async append(runId: RunId, event: NewRunEvent): Promise<RunEvent> {
     const existing = await this.read(runId);
     const full = runEventSchema.parse({
       ...event,

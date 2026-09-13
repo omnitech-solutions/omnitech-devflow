@@ -11,8 +11,12 @@ export default defineConfig({
     // compiled. A test that can pass against code that no longer exists is not a test.
     alias: {
       '@omnitech/devflow-contracts': src('contracts'),
+      '@omnitech/devflow-core/testing': fileURLToPath(
+        new URL('./packages/core/src/testing.ts', import.meta.url),
+      ),
       '@omnitech/devflow-core': src('core'),
       '@omnitech/devflow-adapters': src('adapters'),
+      '@omnitech/devflow': src('cli'),
     },
   },
   test: {

@@ -88,6 +88,12 @@ export const observabilityConfigSchema = z.strictObject({
 });
 
 export const devflowConfigSchema = z.strictObject({
+  /**
+   * The one key that is not a setting. Editors use it for completion in the config file, and
+   * `setup` writes it — so the strict object has to admit it by name. Everything else unknown is
+   * still rejected, which is the point: a renamed setting must fail loudly rather than be dropped.
+   */
+  $schema: z.string().optional(),
   models: modelsConfigSchema,
   budgets: budgetsConfigSchema,
   verification: verificationConfigSchema,
