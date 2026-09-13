@@ -1,0 +1,12 @@
+pre-commit:
+  parallel: true
+  commands:
+    format:
+      run: npx biome check .
+    typecheck:
+      run: npx tsc -b --force
+
+pre-push:
+  commands:
+    test:
+      run: npx vitest run --coverage --config vitest.hooks.config.ts
