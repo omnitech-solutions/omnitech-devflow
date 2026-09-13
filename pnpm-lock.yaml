@@ -33,6 +33,15 @@ importers:
         specifier: ^4.4.3
         version: 4.6.4
 
+  packages/core:
+    dependencies:
+      '@omnitech/devflow-contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      zod:
+        specifier: ^4.4.3
+        version: 4.6.4
+
 packages:
 
   '@ampproject/remapping@2.3.0':
