@@ -302,3 +302,49 @@ describe('SystemClock', () => {
     expect(new SystemClock().now().getTime()).toBeGreaterThan(new Date('2020-01-01').getTime());
   });
 });
+
+describe('references to a name used as a property', () => {
+  /**
+   * The gap that mattered most, because of which direction it failed in.
+   *
+   * `identifier` alone found one of the four uses below. A `references` claim about a property
+   * therefore read as struck when it was true — annoying — and an `absent` claim about one read as
+   * VERIFIED when it was false, which is a green tick on a lie.
+   */
+  const SOURCE = [
+    'const a = element.choicesOrder;',
+    'obj.choicesOrder = 1;',
+    'foo(choicesOrder);',
+    'const { choicesOrder } = x;',
+  ].join('\n');
+
+  const inspectorOver = (text: string) => {
+    const dir = mkdtempSync(join(tmpdir(), 'devflow-refs-'));
+    writeFileSync(join(dir, 'a.ts'), text);
+    return new AstGrepInspector({ repoRoot: dir });
+  };
+
+  it('finds a property access, not only a bare identifier', async () => {
+    const inspector = inspectorOver(SOURCE);
+    const found = await inspector.referencesTo('choicesOrder');
+    expect(found.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('reports each site once even when several kinds match the same line', async () => {
+    const inspector = inspectorOver('obj.choicesOrder = choicesOrder;');
+    const lines = (await inspector.referencesTo('choicesOrder')).map((l) => l.line);
+    expect(new Set(lines).size).toBe(lines.length);
+  });
+
+  it('does not claim a name is absent from a file that uses it as a property', async () => {
+    // Stated as the property rather than the mechanism: this is the assertion that would have
+    // caught the original bug, whatever node kinds the grammar happens to use.
+    const inspector = inspectorOver('const a = element.choicesOrder;');
+    expect(await inspector.referencesTo('choicesOrder')).not.toEqual([]);
+  });
+
+  it('still finds nothing for a name that genuinely is not there', async () => {
+    const inspector = inspectorOver('const a = element.somethingElse;');
+    expect(await inspector.referencesTo('choicesOrder')).toEqual([]);
+  });
+});

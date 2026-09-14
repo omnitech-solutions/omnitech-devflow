@@ -30,6 +30,27 @@ const SKIP = new Set(['node_modules', 'dist', 'build', 'coverage', '.git', '.nex
 
 const langFor = (file: string): Lang | undefined => LANGS.find(([ext]) => ext === extname(file))?.[1];
 
+/**
+ * Every node kind that counts as *using* a name.
+ *
+ * `identifier` alone was the original rule and it missed three of every four real uses. In
+ *
+ *     const a = element.choicesOrder;   // property_identifier
+ *     obj.choicesOrder = 1;             // property_identifier
+ *     foo(choicesOrder);                // identifier
+ *     const { choicesOrder } = x;       // shorthand_property_identifier_pattern
+ *
+ * it found exactly one. That is bad for a `references` claim and much worse for an `absent` one: a
+ * property used on every line of a file verified as absent from it, which is a green tick on a
+ * false statement — the single failure this gate exists to prevent.
+ */
+const REFERENCE_KINDS = [
+  'identifier',
+  'property_identifier',
+  'shorthand_property_identifier',
+  'shorthand_property_identifier_pattern',
+] as const;
+
 /** Every definition shape TypeScript uses, asked by node kind. */
 const DEFINITION_KINDS = [
   'function_declaration',
@@ -98,7 +119,7 @@ export class AstGrepInspector implements CodeInspector {
 
   async referencesTo(symbol: string, scope?: InspectorScope): Promise<readonly SourceLocation[]> {
     return this.search(scope, (root) =>
-      root.findAll({ rule: { kind: 'identifier', regex: `^${escapeRegex(symbol)}$` } }),
+      REFERENCE_KINDS.flatMap((kind) => root.findAll({ rule: { kind, regex: `^${escapeRegex(symbol)}$` } })),
     );
   }
 
