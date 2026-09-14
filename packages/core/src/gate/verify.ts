@@ -19,7 +19,12 @@ import type { CodeInspector, SourceLocation } from '../ports/inspector.js';
  */
 
 /**
- * Exactly the text the gate reads claims out of: the body of every TODO row, and nothing else.
+ * Exactly the text the gate **blocks on**: the body of every TODO row, and nothing else.
+ *
+ * Notes are verified too, and reported — a wrong fact in the briefing is how a correct step gets
+ * written against the wrong world. They do not appear here because they do not block: a note is
+ * context, not an instruction an executor acts on. This function answers "what can turn the gate
+ * red", which is the only question a mutation proof is entitled to ask.
  *
  * Exported because a mutation proof must be able to ask "did my edit land where the check looks?"
  * without guessing. It is guessing that produced the failure this exists to prevent — twice I broke

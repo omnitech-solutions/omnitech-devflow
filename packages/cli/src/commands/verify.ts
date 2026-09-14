@@ -94,6 +94,43 @@ export async function verify(env: Env, taskId: string): Promise<number> {
     }
   }
 
+  // Notes, checked too.
+  //
+  // They were not, for a long time, and the consequence was worse than a gap: the notes are where
+  // discovery writes its source-tree mapping — "`EmailDeliveryAdapter` is defined in
+  // `delivery.ts:518`" — so the plan's most factual claims were the only ones nobody checked. It
+  // also produced a genuinely misleading failure. Mutating a citation in a note left the gate green
+  // because the gate did not read notes, which looks exactly like a hole in the gate.
+  //
+  // Notes are reported separately and do NOT block. A note is context, not an instruction an
+  // executor acts on, and a stale note should not stop work the way a wrong step must. It is still
+  // shown, loudly, because a wrong fact in the briefing is how a correct step gets written against
+  // the wrong world.
+  const noteRows = parsed.rows.filter((r) => r.type === 'note' || r.type === 'audit');
+  const noteReports = await Promise.all(
+    noteRows.map(async (row) => ({ row, report: await verifyClaims(claimsIn(row.body), env.inspector) })),
+  );
+  const noteClaims = noteReports.reduce((n, { report }) => n + report.items.length, 0);
+  const noteStruck = noteReports.reduce((n, { report }) => n + report.struck, 0);
+
+  if (noteClaims > 0) {
+    env.out('');
+    env.out(`Notes — ${noteClaims} claim(s) checked, ${noteStruck} wrong (context, so this does not block)`);
+    for (const { row, report } of noteReports) {
+      if (report.items.length === 0) continue;
+      env.out(`  ${report.struck ? '✗' : '✓'} ${row.title}  ${evidenceLine(report)}`);
+      for (const item of report.items) {
+        if (item.status === 'verified') continue;
+        env.out(`      ${item.status === 'struck' ? '✗' : '?'} ${item.detail}`);
+      }
+    }
+    if (noteStruck > 0) {
+      env.out('');
+      env.out('  A wrong fact in the briefing is how a correct step gets written against the wrong');
+      env.out('  world. Worth fixing before the steps are executed, even though it is not blocking.');
+    }
+  }
+
   if (thin.length) {
     env.out('');
     env.out(`Thin steps — missing a Depends on / Lands in / Estimated decisions header: ${thin.length}`);
@@ -105,6 +142,14 @@ export async function verify(env: Env, taskId: string): Promise<number> {
     env.out(`${struck} claim(s) do not hold. Fix the plan, not the check.`);
     await env.runs.append(runId, { kind: 'run.finished', outcome: 'stopped' });
     return 1;
+  }
+
+  if (claimed === 0 && noteClaims > 0) {
+    // The notes were checked and the steps cite nothing. Worth its own sentence: the plan has been
+    // held against the code, but the part an executor will actually act on has not.
+    env.out(`Notes hold, but no STEP cites the code — the part an executor acts on is unchecked.`);
+    await env.runs.append(runId, { kind: 'run.finished', outcome: 'completed' });
+    return 0;
   }
 
   if (claimed === 0) {

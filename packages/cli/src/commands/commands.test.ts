@@ -144,6 +144,108 @@ describe('claimsIn', () => {
   });
 });
 
+describe('notes are checked, and reported apart from the steps', () => {
+  const bookWith = (note: string, step: string) =>
+    `---\nname: T\n---\n\n# T\n\n## NOTE — Source-tree mapping\n\n${note}\n\n## TODO 1 — do the thing\n\n${step}\n`;
+
+  const onDisk = (taskId: string, book: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'devflow-notes-'));
+    const taskRoot = join(dir, '.devflow', 'tasks', taskId);
+    mkdirSync(taskRoot, { recursive: true });
+    writeFileSync(join(taskRoot, 'plan.json'), JSON.stringify({ slug: 's' }));
+    writeFileSync(join(taskRoot, 's.book.md'), book);
+    return dir;
+  };
+
+  const inspector = new FakeInspector({
+    definitions: { theThing: [{ path: 'src/thing.ts', line: 12 }] },
+  });
+
+  it('reports a wrong claim in a note', async () => {
+    // The gap that mattered most: discovery writes its source-tree mapping into the notes, so the
+    // plan's most factual claims were the only ones nobody checked.
+    const dir = onDisk(
+      'T-20',
+      bookWith('`src/elsewhere.ts` defines `theThing`.', '`src/thing.ts` defines `theThing`.'),
+    );
+    const env = envWith({ repoRoot: dir, inspector });
+    await verify(env, 'T-20');
+    const said = (env as Env & { said: () => string }).said();
+    expect(said).toContain('Notes — 1 claim(s) checked, 1 wrong');
+    expect(said).toContain('it is in src/thing.ts');
+  });
+
+  it('does not block on it — a note is context, not an instruction', async () => {
+    // A stale briefing should not stop work the way a wrong step must, so the exit code stays 0
+    // and the step's own verdict is what decides.
+    const dir = onDisk(
+      'T-21',
+      bookWith('`src/elsewhere.ts` defines `theThing`.', '`src/thing.ts` defines `theThing`.'),
+    );
+    const env = envWith({ repoRoot: dir, inspector });
+    expect(await verify(env, 'T-21')).toBe(0);
+    expect((env as Env & { said: () => string }).said()).toContain('does not block');
+  });
+
+  it('says why it is worth fixing anyway', async () => {
+    const dir = onDisk(
+      'T-22',
+      bookWith('`src/elsewhere.ts` defines `theThing`.', '`src/thing.ts` defines `theThing`.'),
+    );
+    const env = envWith({ repoRoot: dir, inspector });
+    await verify(env, 'T-22');
+    expect((env as Env & { said: () => string }).said()).toContain('written against the wrong');
+  });
+
+  it('lists only the notes that actually cite something', async () => {
+    // A book has many notes — Source, Posture, Hard rules, Out of scope. Most are prose. Printing
+    // a row for each would bury the one note that has a fact in it.
+    const book =
+      '---\nname: T\n---\n\n# T\n\n## NOTE — Posture\n\nProse, no citations.\n\n' +
+      '## NOTE — Source-tree mapping\n\n`src/thing.ts` defines `theThing`.\n\n' +
+      '## TODO 1 — do it\n\n`src/thing.ts` defines `theThing`.\n';
+    const env = envWith({ repoRoot: onDisk('T-25', book), inspector });
+    await verify(env, 'T-25');
+    const said = (env as Env & { said: () => string }).said();
+    expect(said).toContain('Source-tree mapping');
+    expect(said).not.toContain('Posture');
+  });
+
+  it('marks an unverifiable note claim with ? rather than ✗', async () => {
+    // Same distinction the steps make. "I could not look" is not "I looked and the briefing was
+    // wrong", and a reader deciding whether to trust the plan needs to know which one happened.
+    const env = envWith({
+      repoRoot: onDisk('T-26', bookWith('`src/thing.ts` defines `theThing`.', 'no citations here')),
+      inspector: new FakeInspector({ available: false }),
+    });
+    await verify(env, 'T-26');
+    const said = (env as Env & { said: () => string }).said();
+    expect(said).toContain('? the code inspector could not run');
+    expect(said).not.toContain('✗ the code inspector');
+  });
+
+  it('stays quiet when the notes cite nothing', async () => {
+    const dir = onDisk(
+      'T-23',
+      bookWith('Some prose with no citations.', '`src/thing.ts` defines `theThing`.'),
+    );
+    const env = envWith({ repoRoot: dir, inspector });
+    await verify(env, 'T-23');
+    expect((env as Env & { said: () => string }).said()).not.toContain('Notes —');
+  });
+
+  it('calls out a plan whose notes hold but whose steps cite nothing', async () => {
+    // Reads as a clean run otherwise, and it is the more dangerous shape: the briefing was checked
+    // and the part an executor will act on was not.
+    const dir = onDisk('T-24', bookWith('`src/thing.ts` defines `theThing`.', 'Just do it.'));
+    const env = envWith({ repoRoot: dir, inspector });
+    expect(await verify(env, 'T-24')).toBe(0);
+    const said = (env as Env & { said: () => string }).said();
+    expect(said).toContain('no STEP cites the code');
+    expect(said).not.toContain('Every citation holds');
+  });
+});
+
 describe('verify, on a book that is not quite what DevFlow wrote', () => {
   it('falls back to the slug when the book has lost its name', async () => {
     // Books are meant to be hand-edited; someone deleting the frontmatter name must not crash the
