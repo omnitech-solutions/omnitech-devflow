@@ -1,41 +1,19 @@
 import { join } from 'node:path';
-import type { Claim, RunId, TaskId } from '@omnitech/devflow-contracts';
+import type { RunId, TaskId } from '@omnitech/devflow-contracts';
 import { blanks, evidenceAllows, parseBook, undisciplinedTodos, verifyClaims } from '@omnitech/devflow-core';
 import { type Env, readMaybe, taskDir } from '../env.js';
 import { evidenceLine } from '../render.js';
+import { claimsIn } from './claims.js';
 
 /**
  * `devflow verify <task>` — send the plan's claims back to the code.
  *
- * This is the gate the whole tool exists for. A model — or a human — writing
- * "`runtime.ts:958` strips the markup" is doing the thing that is easiest to get wrong and hardest
- * to notice, so nothing is taken on trust: every citation is checked against the file it names.
+ * This is the gate the whole tool exists for. Every claim is checked against something that
+ * survives an edit — a definition, a reference, the absence of one, or a piece of source text —
+ * so a correct plan does not go red because someone ran a formatter.
  */
 
-/**
- * `path:line`, optionally followed by a backticked quotation.
- *
- * The fragment group explicitly refuses to match another `path:line`. Without that, a step citing
- * two places had the SECOND citation swallowed as the first one's quoted fragment — one claim
- * instead of two, silently, which is the worst way for evidence to go missing.
- */
-const CITATION = /`([\w./-]+\.[a-z]{1,4}):(\d+)`(?:[^\n`]*`(?!\s*[\w./-]+\.[a-z]{1,4}:\d+`)([^`\n]{4,})`)?/g;
-
-export function claimsIn(body: string): readonly Claim[] {
-  const out: Claim[] = [];
-  for (const m of body.matchAll(CITATION)) {
-    // Both groups are mandatory in CITATION, so a match always carries them.
-    const [, path, line, fragment] = m as unknown as [string, string, string, string | undefined];
-    out.push({
-      kind: 'location',
-      text: m[0],
-      path,
-      line: Number(line),
-      ...(fragment ? { fragment } : {}),
-    });
-  }
-  return out;
-}
+export { claimsIn };
 
 export async function verify(env: Env, taskId: string): Promise<number> {
   const dir = taskDir(env, taskId);
@@ -78,10 +56,12 @@ export async function verify(env: Env, taskId: string): Promise<number> {
 
   let struck = 0;
   let stepNo = 0;
+  let claimed = 0;
   env.out('Evidence');
   for (const row of parsed.rows.filter((r) => r.type === 'todo')) {
     stepNo += 1;
     const claims = claimsIn(row.body);
+    claimed += claims.length;
     const report = await verifyClaims(claims, env.inspector);
     await env.runs.append(runId, { kind: 'evidence.checked', step: stepNo, report });
     struck += report.struck;
@@ -90,8 +70,19 @@ export async function verify(env: Env, taskId: string): Promise<number> {
     env.out(`  ${mark} step ${stepNo}  ${row.title}`);
     env.out(`      ${claims.length ? evidenceLine(report) : 'no citations'}`);
     for (const item of report.items) {
-      if (item.status === 'verified') continue;
-      env.out(`      ${item.status === 'struck' ? '✗' : '?'} ${item.detail}`);
+      if (item.status === 'struck' || item.status === 'unverifiable') {
+        env.out(`      ${item.status === 'struck' ? '✗' : '?'} ${item.detail}`);
+      } else if (item.movedTo !== undefined) {
+        // Not a warning. The claim holds; the code simply moved under it, and the line the plan
+        // recorded would now send a reader to the wrong place. Saying so is the whole reason the
+        // gate keeps line numbers at all.
+        //
+        // `claim.text` rather than the symbol: it is the only field guaranteed non-empty, so there
+        // is no fallback branch here that no input can reach. `moved()` in the gate is the single
+        // writer of `movedTo` and only sets it when the claim recorded a line, so `claim.line` is
+        // present whenever this runs.
+        env.out(`      ↪ now at line ${item.movedTo}, not ${item.claim.line} — ${item.claim.text}`);
+      }
     }
     if (!evidenceAllows(report)) {
       await env.runs.append(runId, {
@@ -115,7 +106,24 @@ export async function verify(env: Env, taskId: string): Promise<number> {
     await env.runs.append(runId, { kind: 'run.finished', outcome: 'stopped' });
     return 1;
   }
-  env.out('Every citation holds.');
+
+  if (claimed === 0) {
+    // Not a pass. A plan whose every step cites nothing has not been checked against anything,
+    // and printing "every citation holds" over it is precisely the false green this gate exists to
+    // prevent — the reader would take a clean run as confirmation the plan matches the code.
+    // It is not an error either: an operator step ("rotate the key in QA") has nothing to cite.
+    // So: exit 0, and say plainly that nothing was checked.
+    env.out(`Nothing was checked — no step cites the code.`);
+    env.out(`  This is not a pass. It means verify had no claim to test.`);
+    env.out(`  Anchor one, and it will be checked:`);
+    env.out('    `src/thing.ts` defines `theSymbol`');
+    env.out('    `src/other.tsx` does not call `theSymbol`');
+    env.out('    `src/thing.ts` contains `some source text`');
+    await env.runs.append(runId, { kind: 'run.finished', outcome: 'completed' });
+    return 0;
+  }
+
+  env.out(`Every citation holds — ${claimed} claim(s) across ${stepNo} step(s).`);
   await env.runs.append(runId, { kind: 'run.finished', outcome: 'completed' });
   return 0;
 }

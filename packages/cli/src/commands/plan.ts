@@ -48,8 +48,14 @@ export async function plan(env: Env, taskId: string, steps: number): Promise<num
       prohibited: ['<the tempting wrong move this step must not make>'],
       executor: env.config.config.execution.defaultExecutor,
       prompt:
-        '<what to do, written so the executor never has to go looking. Cite file:line from the\n' +
-        'Source-tree mapping note above, and include the command that re-derives each claim.>',
+        '<what to do, written so the executor never has to go looking.\n' +
+        '\n' +
+        'Anchor every claim to something that survives an edit — `devflow verify` checks these:\n' +
+        '  `theSymbol` is defined in `path/to/file.ts`\n' +
+        '  `path/to/file.tsx` calls `theSymbol`\n' +
+        '  `path/to/other.tsx` does not call `theSymbol`\n' +
+        '  `path/to/file.ts` contains `some source text`\n' +
+        'A trailing `:42` is kept as a navigation hint and is never what passes or fails.>',
       acceptanceCriteria: ['<an observable that is true after and was false before>'],
       evidence: { items: [], verified: 0, struck: 0, unverifiable: 0 },
     })),

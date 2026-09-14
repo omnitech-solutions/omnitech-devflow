@@ -1,30 +1,31 @@
 import type { Claim } from '@omnitech/devflow-contracts';
 import { describe, expect, it } from 'vitest';
 import { FakeInspector } from '../ports/__fakes__/index.js';
-import { evidenceAllows, LINE_TOLERANCE, verifyClaim, verifyClaims } from './verify.js';
+import { evidenceAllows, verifyClaim, verifyClaims } from './verify.js';
 
 /**
- * The gate, tested as the function it is. Every case is a claim a model could plausibly write,
- * and the ones that matter most are the near-misses — a claim wrong by nine lines looks exactly
- * like a claim wrong by one until something measures it.
+ * The gate, tested as the function it is.
+ *
+ * The organising property of every case: **a claim that is true must stay true when the file is
+ * edited elsewhere.** The previous design anchored to line numbers and failed that — running a
+ * formatter would have struck a plan full of correct claims, and a gate that cries wolf is a gate
+ * people learn to skip.
  */
 
 const DIALOG = [
-  'function DialogContent({ className, ...props }) {',
-  '  return (',
-  '    <DialogPrimitive.Content',
-  '      className={cn(',
-  '        "fixed top-[50%] grid w-full gap-4 sm:max-w-lg",',
-  '        className',
-  '      )}',
-  '    />',
-  '  );',
+  'import { cn } from "./utils";',
+  '',
+  'export function DialogContent({ className }: Props) {',
+  '  return <div className={cn("grid w-full gap-4 sm:max-w-lg", className)} />;',
   '}',
 ];
 
 const inspector = new FakeInspector({
-  files: { 'src/ui/dialog.tsx': DIALOG },
-  definitions: { installRichTitles: [{ path: 'src/richText.ts', line: 206 }] },
+  files: { 'src/dialog.tsx': DIALOG },
+  definitions: {
+    installRichTitles: [{ path: 'src/richText.ts', line: 206 }],
+    DialogContent: [{ path: 'src/dialog.tsx', line: 3 }],
+  },
   references: {
     installRichTitles: [
       { path: 'src/Preview.tsx', line: 302 },
@@ -34,134 +35,181 @@ const inspector = new FakeInspector({
 });
 
 const claim = (over: Partial<Claim>): Claim => ({
-  kind: 'location',
-  text: 'the base class list ends in sm:max-w-lg',
-  path: 'src/ui/dialog.tsx',
-  line: 5,
-  fragment: 'sm:max-w-lg',
+  kind: 'defines',
+  text: 'a claim',
+  path: 'src/richText.ts',
+  symbol: 'installRichTitles',
   ...over,
 });
 
-describe('a location claim', () => {
-  it('passes when the fragment is on the cited line', async () => {
-    expect(await verifyClaim(claim({}), inspector)).toMatchObject({ status: 'verified' });
+describe('the property that matters: an edit elsewhere must not break a true claim', () => {
+  it('holds when the symbol has moved to a different line', async () => {
+    // Someone added an import at the top of richText.ts. Every line below shifted. The claim that
+    // the file DEFINES the symbol is exactly as true as it was.
+    const evidence = await verifyClaim(claim({ line: 40 }), inspector);
+    expect(evidence.status).toBe('verified');
   });
 
-  it(`passes when the file has shifted by up to ${LINE_TOLERANCE} lines`, async () => {
-    // Adding a line above a function shifts every citation below it. Failing a plan because
-    // someone ran a formatter would make the gate the enemy.
-    expect(await verifyClaim(claim({ line: 5 + LINE_TOLERANCE }), inspector)).toMatchObject({
-      status: 'verified',
+  it('reports where it moved to, because that is when a reader wants to know', async () => {
+    const evidence = await verifyClaim(claim({ line: 40 }), inspector);
+    expect(evidence).toMatchObject({ status: 'verified', movedTo: 206 });
+  });
+
+  it('says nothing about movement when the line is still right', async () => {
+    expect(await verifyClaim(claim({ line: 206 }), inspector)).not.toHaveProperty('movedTo');
+  });
+
+  it('holds when the claim records no line at all', async () => {
+    expect((await verifyClaim(claim({}), inspector)).status).toBe('verified');
+  });
+});
+
+describe('defines', () => {
+  it('is struck when the symbol lives in another file, and says which', async () => {
+    const e = await verifyClaim(claim({ path: 'src/Respondent.tsx' }), inspector);
+    expect(e).toMatchObject({ status: 'struck', failure: 'symbol-not-defined-here' });
+    expect((e as { detail: string }).detail).toContain('src/richText.ts');
+  });
+
+  it('is struck when the symbol is defined nowhere that was searched', async () => {
+    const e = await verifyClaim(claim({ symbol: 'neverDefined' }), inspector);
+    expect((e as { detail: string }).detail).toContain('nowhere that was searched');
+  });
+
+  it('does not accept a mere reference as a definition', async () => {
+    // `Preview.tsx` calls it; it does not define it. Collapsing the two would make the strongest
+    // claim in a plan the weakest.
+    const e = await verifyClaim(claim({ path: 'src/Preview.tsx' }), inspector);
+    expect(e.status).toBe('struck');
+  });
+});
+
+describe('references', () => {
+  it('holds for a call site', async () => {
+    const e = await verifyClaim(claim({ kind: 'references', path: 'src/Preview.tsx' }), inspector);
+    expect(e.status).toBe('verified');
+  });
+
+  it('holds in the file that defines it — defining is using', async () => {
+    const e = await verifyClaim(claim({ kind: 'references', path: 'src/richText.ts' }), inspector);
+    expect(e.status).toBe('verified');
+  });
+
+  it('is struck where the symbol does not appear', async () => {
+    const e = await verifyClaim(claim({ kind: 'references', path: 'src/Respondent.tsx' }), inspector);
+    expect(e).toMatchObject({ status: 'struck', failure: 'symbol-not-referenced-here' });
+  });
+});
+
+describe('absent — the claim that settles design questions', () => {
+  it('holds when the symbol really is not used there', async () => {
+    // "Respondent.tsx never calls installRichTitles" is what settled whether the respondent could
+    // render rich titles at all. A gate that cannot express this cannot check the useful half of
+    // a plan.
+    const e = await verifyClaim(
+      claim({ kind: 'absent', path: 'src/Respondent.tsx', symbol: 'installRichTitles' }),
+      inspector,
+    );
+    expect(e.status).toBe('verified');
+  });
+
+  it('goes red once the symbol IS there, and says where', async () => {
+    // Correct behaviour, not a false alarm: the moment someone lands the fix, the plan's statement
+    // of the old world stops being true and the plan needs updating.
+    const e = await verifyClaim(
+      claim({ kind: 'absent', path: 'src/Preview.tsx', symbol: 'installRichTitles' }),
+      inspector,
+    );
+    expect(e).toMatchObject({ status: 'struck', failure: 'symbol-is-present' });
+    expect((e as { detail: string }).detail).toContain('302');
+  });
+
+  it('names each place once, even where a definition is also a reference', async () => {
+    // Real output before this was deduped: "testRecipient IS in delivery.ts — at 186, 545, 186,
+    // 545, 546, 548". A reader counts six sites and there are four.
+    const both = new FakeInspector({
+      definitions: { foo: [{ path: 'src/a.ts', line: 3 }] },
+      references: {
+        foo: [
+          { path: 'src/a.ts', line: 3 },
+          { path: 'src/a.ts', line: 9 },
+        ],
+      },
     });
+    const e = await verifyClaim(claim({ kind: 'absent', path: 'src/a.ts', symbol: 'foo' }), both);
+    expect((e as { detail: string }).detail).toBe('foo IS in src/a.ts — at line 3, 9');
+  });
+});
+
+describe('contains', () => {
+  it('finds source text anywhere in the file, not at a line', async () => {
+    const e = await verifyClaim(
+      claim({ kind: 'contains', path: 'src/dialog.tsx', symbol: undefined, fragment: 'sm:max-w-lg' }),
+      inspector,
+    );
+    expect(e.status).toBe('verified');
   });
 
-  it('is struck when the fragment is further away than the tolerance', async () => {
-    // A fragment found nine lines from where it was cited is evidence the model was guessing.
-    const e = await verifyClaim(claim({ line: 5 + LINE_TOLERANCE + 1 }), inspector);
+  it('tolerates reflowed whitespace, because a model quoting source reflows it', async () => {
+    const e = await verifyClaim(
+      claim({
+        kind: 'contains',
+        path: 'src/dialog.tsx',
+        symbol: undefined,
+        fragment: 'grid  w-full\n  gap-4',
+      }),
+      inspector,
+    );
+    expect(e.status).toBe('verified');
+  });
+
+  it('is struck when the text is not there', async () => {
+    const e = await verifyClaim(
+      claim({ kind: 'contains', path: 'src/dialog.tsx', symbol: undefined, fragment: 'max-w-4xl' }),
+      inspector,
+    );
     expect(e).toMatchObject({ status: 'struck', failure: 'fragment-not-found' });
   });
 
   it('is struck when the file does not exist', async () => {
-    const e = await verifyClaim(claim({ path: 'src/imaginary.tsx' }), inspector);
+    const e = await verifyClaim(
+      claim({ kind: 'contains', path: 'src/gone.tsx', symbol: undefined, fragment: 'anything' }),
+      inspector,
+    );
     expect(e).toMatchObject({ status: 'struck', failure: 'path-missing' });
-  });
-
-  it('is struck when the line is past the end of the file', async () => {
-    const e = await verifyClaim(claim({ line: 9_000 }), inspector);
-    expect(e).toMatchObject({ status: 'struck', failure: 'line-out-of-range' });
-  });
-
-  it('tolerates reflowed whitespace in the quoted fragment', async () => {
-    // A model quoting source reflows it. Striking a claim that is right about the code and wrong
-    // about its wrapping would train people to ignore the gate.
-    const e = await verifyClaim(claim({ fragment: 'grid  w-full\n   gap-4' }), inspector);
-    expect(e).toMatchObject({ status: 'verified' });
-  });
-
-  it('checks the whole file when no line is cited', async () => {
-    expect(await verifyClaim(claim({ line: undefined }), inspector)).toMatchObject({ status: 'verified' });
-    expect(await verifyClaim(claim({ line: undefined, fragment: 'nowhere' }), inspector)).toMatchObject({
-      status: 'struck',
-      failure: 'fragment-not-found',
-    });
-  });
-
-  it('passes a claim that cites a place but quotes nothing', async () => {
-    expect(await verifyClaim(claim({ fragment: undefined }), inspector)).toMatchObject({
-      status: 'verified',
-    });
   });
 });
 
-describe('a structural claim', () => {
-  const structural = (over: Partial<Claim>): Claim =>
-    claim({
-      kind: 'structural',
-      text: 'installRichTitles is called here',
-      path: 'src/Preview.tsx',
-      line: 302,
-      fragment: undefined,
-      query: 'installRichTitles',
-      ...over,
-    });
-
-  it('passes when the symbol is referenced at the cited place', async () => {
-    expect(await verifyClaim(structural({}), inspector)).toMatchObject({ status: 'verified' });
-  });
-
-  it('passes for a definition as well as a reference', async () => {
-    expect(await verifyClaim(structural({ path: 'src/richText.ts', line: 206 }), inspector)).toMatchObject({
-      status: 'verified',
-    });
-  });
-
-  it('is struck when the symbol is absent from the cited file', async () => {
-    // The rule that makes this worth doing: a substring check once reported PASS on a file that
-    // mentioned the name only in an import, a comment and a string.
-    const e = await verifyClaim(structural({ path: 'src/Respondent.tsx' }), inspector);
-    expect(e).toMatchObject({ status: 'struck', failure: 'query-no-match' });
-  });
-
-  it('is struck when the symbol is in the file but nowhere near the cited line', async () => {
-    const e = await verifyClaim(structural({ line: 900 }), inspector);
-    expect(e).toMatchObject({ status: 'struck', failure: 'query-no-match' });
-    expect((e as { detail: string }).detail).toContain('302');
-  });
-
-  it('passes when the file is right and no line is claimed', async () => {
-    expect(await verifyClaim(structural({ line: undefined }), inspector)).toMatchObject({
-      status: 'verified',
-    });
-  });
-
-  it('is struck when it carries no query to ask', async () => {
-    const e = await verifyClaim(structural({ query: undefined }), inspector);
-    expect(e).toMatchObject({ status: 'struck', failure: 'query-no-match' });
+describe('a claim that cannot be checked as written', () => {
+  it.each([
+    ['contains with nothing quoted', { kind: 'contains' as const, symbol: undefined }],
+    ['defines with no symbol', { kind: 'defines' as const, symbol: undefined }],
+    ['references with no symbol', { kind: 'references' as const, symbol: undefined }],
+    ['absent with no symbol', { kind: 'absent' as const, symbol: undefined }],
+  ])('is struck as incomplete: %s', async (_what, over) => {
+    const e = await verifyClaim(claim(over), inspector);
+    expect(e).toMatchObject({ status: 'struck', failure: 'claim-incomplete' });
   });
 });
 
 describe('when the inspector cannot run', () => {
   const down = new FakeInspector({ available: false });
 
-  it('reports unverifiable, never a pass', async () => {
-    // The whole reason the status exists. A checker that cannot run has not passed anything.
+  it('reports unverifiable, never a pass and never a strike', async () => {
+    // The whole reason the status exists. A checker that could not run has not passed anything —
+    // and it has not disproved anything either.
     const e = await verifyClaim(claim({}), down);
     expect(e).toMatchObject({ status: 'unverifiable', failure: 'inspector-unavailable' });
-  });
-
-  it('does not silently strike either — the claim may well be true', async () => {
-    const e = await verifyClaim(claim({}), down);
-    expect(e.status).not.toBe('struck');
   });
 });
 
 describe('verifyClaims', () => {
   it('counts each outcome and keeps every item', async () => {
     const report = await verifyClaims(
-      [claim({}), claim({ path: 'src/gone.tsx' }), claim({ fragment: 'not there' })],
+      [claim({}), claim({ path: 'src/nope.ts' }), claim({ kind: 'absent', path: 'src/Respondent.tsx' })],
       inspector,
     );
-    expect(report).toMatchObject({ verified: 1, struck: 2, unverifiable: 0 });
+    expect(report).toMatchObject({ verified: 2, struck: 1, unverifiable: 0 });
     expect(report.items).toHaveLength(3);
   });
 
@@ -172,8 +220,9 @@ describe('verifyClaims', () => {
 
 describe('evidenceAllows', () => {
   it('blocks on any struck claim', async () => {
-    const report = await verifyClaims([claim({}), claim({ path: 'src/gone.tsx' })], inspector);
-    expect(evidenceAllows(report)).toBe(false);
+    expect(evidenceAllows(await verifyClaims([claim({}), claim({ path: 'src/nope.ts' })], inspector))).toBe(
+      false,
+    );
   });
 
   it('allows when everything checked out', async () => {
@@ -187,14 +236,12 @@ describe('evidenceAllows', () => {
   });
 
   it('blocks a step whose every claim was unverifiable', async () => {
-    // Nothing was wrong, and nothing was proved. Proceeding would be proceeding on nothing.
     const report = await verifyClaims([claim({}), claim({})], new FakeInspector({ available: false }));
     expect(report.unverifiable).toBe(2);
     expect(evidenceAllows(report)).toBe(false);
   });
 
-  it('allows when some claims were checked and the rest were not', async () => {
-    const report = { items: [], verified: 2, struck: 0, unverifiable: 1 };
-    expect(evidenceAllows(report)).toBe(true);
+  it('allows when some claims were checked and the rest were not', () => {
+    expect(evidenceAllows({ items: [], verified: 2, struck: 0, unverifiable: 1 })).toBe(true);
   });
 });

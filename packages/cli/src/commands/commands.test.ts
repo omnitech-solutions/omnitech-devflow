@@ -79,25 +79,68 @@ describe('show, once work has actually happened', () => {
 });
 
 describe('claimsIn', () => {
-  it('reads a citation with a quoted fragment', () => {
-    expect(claimsIn('the cap is at `src/a.ts:65` — `sm:max-w-lg` wins')).toEqual([
-      expect.objectContaining({ path: 'src/a.ts', line: 65, fragment: 'sm:max-w-lg' }),
+  it('reads "X is defined in path"', () => {
+    expect(claimsIn('`installRichTitles` is defined in `src/richText.ts:206`')).toEqual([
+      {
+        kind: 'defines',
+        text: expect.any(String),
+        path: 'src/richText.ts',
+        line: 206,
+        symbol: 'installRichTitles',
+      },
     ]);
   });
 
-  it('reads a citation that quotes nothing', () => {
-    // A step may point at a place without quoting it. That is a weaker claim, not an invalid one.
-    const claims = claimsIn('see `src/a.ts:65` for the detail');
-    expect(claims).toHaveLength(1);
-    expect(claims[0]).not.toHaveProperty('fragment');
+  it('reads the same claim written the other way round', () => {
+    expect(claimsIn('`src/richText.ts` defines `installRichTitles`')).toEqual([
+      expect.objectContaining({ kind: 'defines', path: 'src/richText.ts', symbol: 'installRichTitles' }),
+    ]);
   });
 
-  it('finds every citation in a step, not just the first', () => {
-    expect(claimsIn('`a/b.ts:1` and later `c/d.tsx:22`')).toHaveLength(2);
+  it('reads "path calls X"', () => {
+    expect(claimsIn('`src/Preview.tsx` calls `installRichTitles`')).toEqual([
+      expect.objectContaining({ kind: 'references', path: 'src/Preview.tsx', symbol: 'installRichTitles' }),
+    ]);
+  });
+
+  it('reads "path contains `text`"', () => {
+    expect(claimsIn('`src/ui/dialog.tsx` contains `sm:max-w-lg`')).toEqual([
+      expect.objectContaining({ kind: 'contains', path: 'src/ui/dialog.tsx', fragment: 'sm:max-w-lg' }),
+    ]);
+  });
+
+  it('does not read a negative claim as its own opposite', () => {
+    // Load-bearing, and the reason `absent` is matched before `references`: "does not call X"
+    // literally contains "call `X`". Matched in the other order, one sentence would produce two
+    // contradictory claims and the step would fail against itself.
+    expect(claimsIn('`src/Respondent.tsx` does not call `installRichTitles`')).toEqual([
+      expect.objectContaining({ kind: 'absent', path: 'src/Respondent.tsx', symbol: 'installRichTitles' }),
+    ]);
+  });
+
+  it('reads a claim per sentence, not just the first', () => {
+    expect(claimsIn('`a/b.ts` defines `foo`, and `c/d.tsx` calls `foo`')).toHaveLength(2);
+  });
+
+  it('reads the same claim stated twice as one', () => {
+    expect(claimsIn('`a/b.ts` defines `foo`. To repeat: `a/b.ts` defines `foo`.')).toHaveLength(1);
+  });
+
+  it('makes no claim from a bare pointer', () => {
+    // Changed deliberately. "see `src/a.ts:65`" used to become a claim that the gate would pass by
+    // checking a line number — which proved nothing and read as evidence. Nothing is asserted here,
+    // so nothing is claimed, and `verify` says "no citations" instead of showing a green tick.
+    expect(claimsIn('see `src/a.ts:65` for the detail')).toEqual([]);
   });
 
   it('ignores prose that merely looks like a path', () => {
     expect(claimsIn('the ratio was 3:1 and the file is elsewhere')).toEqual([]);
+  });
+
+  it('ignores a claim-shaped sentence about something that is not a file', () => {
+    // A path names a file. Without the extension test this reads as a claim about a file called
+    // `notes`, which verify would then strike as path-missing — a red mark on ordinary prose.
+    expect(claimsIn('`notes` defines `theTerm` for the rest of this plan')).toEqual([]);
   });
 });
 
@@ -127,7 +170,7 @@ describe('verify, on a book that is not quite what DevFlow wrote', () => {
     writeFileSync(join(taskRoot, 'plan.json'), JSON.stringify({ slug: 's' }));
     writeFileSync(
       join(taskRoot, 's.book.md'),
-      '---\nname: T\n---\n\n# T\n\n## TODO 1 — a step\n\nthe cap is at `src/a.ts:65`\n',
+      '---\nname: T\n---\n\n# T\n\n## TODO 1 — a step\n\n`src/a.ts` defines `theCap`\n',
     );
 
     const env = envWith({ repoRoot: dir, inspector: new FakeInspector({ available: false }) });

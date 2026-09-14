@@ -13,8 +13,24 @@ import { z } from 'zod';
  * contains only the 9.
  */
 
-/** How a claim can be anchored. `structural` re-runs through the syntax tree, never grep. */
-export const claimKindSchema = z.enum(['location', 'structural', 'command']);
+/**
+ * How a claim is anchored — and every one of these survives an edit elsewhere in the file.
+ *
+ * A line number does not. Any insertion above a cited line invalidates the citation without
+ * changing whether it is true, so a check anchored to one fails when someone runs a formatter.
+ * The alternative is what MJ's own pattern guardians already do: ask the syntax tree a question,
+ * and treat `file:line` as the ANSWER rather than as the thing being checked.
+ *
+ *   defines     the symbol is defined in this file
+ *   references  the symbol is called or referenced in this file
+ *   absent      the symbol is NOT referenced in this file — often the most valuable claim,
+ *               and the one that settled whether the respondent could render rich titles
+ *   contains    the file contains this source text, anywhere in it
+ *
+ * Line numbers are still recorded and displayed, because they are how a reader navigates. They
+ * are never what passes or fails.
+ */
+export const claimKindSchema = z.enum(['defines', 'references', 'absent', 'contains']);
 export type ClaimKind = z.infer<typeof claimKindSchema>;
 
 export const claimSchema = z.strictObject({
@@ -23,12 +39,15 @@ export const claimSchema = z.strictObject({
   text: z.string().min(1),
   /** Repository-relative. Absolute paths do not survive being read on another machine. */
   path: z.string().min(1),
-  /** 1-indexed, as every editor and every error message counts them. */
+  /**
+   * Where it was when the claim was written. Recorded for navigation and reported when it has
+   * moved — never used to decide whether the claim holds.
+   */
   line: z.number().int().positive().optional(),
-  /** The source the claim says is there. Checked within a tolerance, not byte-exact. */
+  /** For `contains`: the source text that must be somewhere in the file. */
   fragment: z.string().optional(),
-  /** For `structural`: the query that must still match. */
-  query: z.string().optional(),
+  /** For `defines`, `references` and `absent`: the symbol to ask the syntax tree about. */
+  symbol: z.string().optional(),
 });
 export type Claim = z.infer<typeof claimSchema>;
 
@@ -38,9 +57,12 @@ export type Claim = z.infer<typeof claimSchema>;
  */
 export const evidenceFailureSchema = z.enum([
   'path-missing',
-  'line-out-of-range',
   'fragment-not-found',
-  'query-no-match',
+  'symbol-not-defined-here',
+  'symbol-not-referenced-here',
+  /** Claimed absent, but it is there. The one that catches a fix that was never applied. */
+  'symbol-is-present',
+  'claim-incomplete',
   'inspector-unavailable',
 ]);
 export type EvidenceFailure = z.infer<typeof evidenceFailureSchema>;
@@ -54,7 +76,15 @@ export type EvidenceFailure = z.infer<typeof evidenceFailureSchema>;
  * because it could not run. "I could not look" is not "I looked".
  */
 export const evidenceSchema = z.discriminatedUnion('status', [
-  z.strictObject({ status: z.literal('verified'), claim: claimSchema }),
+  z.strictObject({
+    status: z.literal('verified'),
+    claim: claimSchema,
+    /**
+     * Where it actually is now, when that differs from the line the claim recorded. The claim
+     * still holds — this is a navigation hint, not a failure.
+     */
+    movedTo: z.number().int().positive().optional(),
+  }),
   z.strictObject({
     status: z.literal('struck'),
     claim: claimSchema,

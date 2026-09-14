@@ -1,110 +1,76 @@
 import { type Claim, type Evidence, type EvidenceReport, summarise } from '@omnitech/devflow-contracts';
-import type { CodeInspector } from '../ports/inspector.js';
+import { parseBook } from '../book/parse.js';
+import type { CodeInspector, SourceLocation } from '../ports/inspector.js';
 
 /**
  * The citation gate. Models propose; this disposes.
  *
- * A model writing "`respondent-runtime.ts:958` strips the markup" is doing the one thing models
- * are worst at, and the answer is not a better prompt. It is that no claim becomes a DevFlow
- * artifact until something has gone to the file and looked.
+ * Every check is anchored to something that **survives an edit**: a definition, a reference, the
+ * absence of a reference, or a piece of source text. Never a line number.
  *
- * Pure of everything except the inspector, which is injected. No filesystem, no network, no
- * workflow engine — so the whole safety argument is testable as a function.
+ * That was the original design and it was wrong. Any insertion above a cited line invalidates the
+ * citation without changing whether it is true, so running a formatter would have struck a plan
+ * full of correct claims — and a gate that cries wolf is a gate people learn to skip. The model to
+ * copy was already in MJ's pattern guardians: ask the syntax tree a question, and treat `file:line`
+ * as the ANSWER rather than as the thing being checked.
+ *
+ * Line numbers are still recorded and reported. When one has moved, the claim still holds and the
+ * new location is shown, because that is exactly the moment a reader wants to know.
  */
 
 /**
- * How far from the cited line the fragment may actually be.
+ * Exactly the text the gate reads claims out of: the body of every TODO row, and nothing else.
  *
- * Not zero, and not large. Files move: a line added above a function shifts every citation below
- * it, and failing a plan because someone ran a formatter would make the gate the enemy. Three is
- * enough to absorb that and far too few to absorb a wrong claim, which is the balance that matters
- * — a fragment found nine lines away is evidence the model was guessing.
- */
-export const LINE_TOLERANCE = 3;
-
-/**
- * Whitespace-insensitive containment.
+ * Exported because a mutation proof must be able to ask "did my edit land where the check looks?"
+ * without guessing. It is guessing that produced the failure this exists to prevent — twice I broke
+ * the first matching line in a book, which was inside a NOTE, watched the gate stay green, and
+ * nearly reported a hole in the gate. The gate had never seen the edit: it does not read NOTEs.
  *
- * A model quoting source will reflow it — different indentation, a line break moved. Comparing
- * raw strings would strike claims that are perfectly correct about the code and merely wrong
- * about how it was wrapped.
+ * One definition, used by the gate's caller and by the proof, so the two cannot disagree about
+ * where the gate is looking. `gate-proof.test.ts` holds them together.
  */
-function contains(haystack: readonly string[], needle: string): boolean {
-  const flat = haystack.join('\n').replace(/\s+/g, ' ');
-  return flat.includes(needle.replace(/\s+/g, ' ').trim());
+export function checkedRegion(book: string): string {
+  return parseBook(book)
+    .rows.filter((r) => r.type === 'todo')
+    .map((r) => r.body)
+    .join('\n');
 }
 
-async function verifyLocation(claim: Claim, inspector: CodeInspector): Promise<Evidence> {
-  const line = claim.line;
-  const [from, to] = line
-    ? [Math.max(1, line - LINE_TOLERANCE), line + LINE_TOLERANCE]
-    : // No line means the claim is about the file, not a place in it: read enough to check.
-      [1, 10_000];
-
-  const lines = await inspector.readLines(claim.path, from, to);
-  if (lines === null) {
-    return { status: 'struck', claim, failure: 'path-missing', detail: `no such file: ${claim.path}` };
-  }
-  if (lines.length === 0) {
-    return {
-      status: 'struck',
-      claim,
-      failure: 'line-out-of-range',
-      detail: `${claim.path} has no line ${String(line)}`,
-    };
-  }
-  if (claim.fragment && !contains(lines, claim.fragment)) {
-    return {
-      status: 'struck',
-      claim,
-      failure: 'fragment-not-found',
-      detail: line
-        ? `${claim.path}:${line} (±${LINE_TOLERANCE}) does not contain ${JSON.stringify(claim.fragment)}`
-        : `${claim.path} does not contain ${JSON.stringify(claim.fragment)}`,
-    };
-  }
-  return { status: 'verified', claim };
+/** Whitespace-insensitive containment — a model quoting source reflows it. */
+function contains(text: string, needle: string): boolean {
+  return text.replace(/\s+/g, ' ').includes(needle.replace(/\s+/g, ' ').trim());
 }
 
-/**
- * A structural claim is re-asked of the syntax tree, never of a substring search.
- *
- * The rule exists because a substring check once reported PASS on a file that mentioned the
- * symbol only in an import, a comment and a string literal. "The name appears here" and "this is
- * called here" are different facts, and only one of them is what a plan means.
- */
-async function verifyStructural(claim: Claim, inspector: CodeInspector): Promise<Evidence> {
-  const symbol = claim.query;
-  if (!symbol) {
-    return {
-      status: 'struck',
-      claim,
-      failure: 'query-no-match',
-      detail: 'a structural claim with no query cannot be checked',
-    };
-  }
+const at = (locations: readonly SourceLocation[], path: string): readonly SourceLocation[] =>
+  locations.filter((l) => l.path === path);
 
-  const [defs, refs] = await Promise.all([inspector.definitionsOf(symbol), inspector.referencesTo(symbol)]);
-  const hits = [...defs, ...refs].filter((l) => l.path === claim.path);
-  if (hits.length === 0) {
-    return {
-      status: 'struck',
-      claim,
-      failure: 'query-no-match',
-      detail: `${symbol} is neither defined nor referenced in ${claim.path}`,
-    };
-  }
-  if (claim.line !== undefined && !hits.some((h) => Math.abs(h.line - claim.line!) <= LINE_TOLERANCE)) {
-    return {
-      status: 'struck',
-      claim,
-      failure: 'query-no-match',
-      detail: `${symbol} is in ${claim.path} but not near line ${claim.line} (found ${hits
-        .map((h) => h.line)
-        .join(', ')})`,
-    };
-  }
-  return { status: 'verified', claim };
+/**
+ * Definitions and references as one list, each place named once.
+ *
+ * A definition is also a reference, so the two lists overlap and a naive concat prints the same
+ * line twice: "testRecipient IS in delivery.ts — at 186, 545, 186, 545, 546, 548" was the real
+ * output. A reader counts those and believes there are six sites.
+ */
+function union(...groups: ReadonlyArray<readonly SourceLocation[]>): readonly SourceLocation[] {
+  const seen = new Set<string>();
+  return groups.flat().filter((l) => {
+    const key = `${l.path}:${l.line}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** A claim's recorded line, and where the thing actually is now. */
+function moved(claim: Claim, found: readonly SourceLocation[]): { movedTo?: number } {
+  const first = found[0];
+  if (!first || claim.line === undefined || first.line === claim.line) return {};
+  return { movedTo: first.line };
+}
+
+async function wholeFile(claim: Claim, inspector: CodeInspector): Promise<string | null> {
+  const lines = await inspector.readLines(claim.path, 1, Number.MAX_SAFE_INTEGER);
+  return lines === null ? null : lines.join('\n');
 }
 
 /** One claim, checked. */
@@ -120,7 +86,85 @@ export async function verifyClaim(claim: Claim, inspector: CodeInspector): Promi
       detail: 'the code inspector could not run, so this claim was never checked',
     };
   }
-  return claim.kind === 'structural' ? verifyStructural(claim, inspector) : verifyLocation(claim, inspector);
+
+  if (claim.kind === 'contains') {
+    if (!claim.fragment) {
+      return {
+        status: 'struck',
+        claim,
+        failure: 'claim-incomplete',
+        detail: 'a `contains` claim quotes nothing',
+      };
+    }
+    const text = await wholeFile(claim, inspector);
+    if (text === null) {
+      return { status: 'struck', claim, failure: 'path-missing', detail: `no such file: ${claim.path}` };
+    }
+    return contains(text, claim.fragment)
+      ? { status: 'verified', claim }
+      : {
+          status: 'struck',
+          claim,
+          failure: 'fragment-not-found',
+          detail: `${claim.path} does not contain ${JSON.stringify(claim.fragment)} anywhere`,
+        };
+  }
+
+  const symbol = claim.symbol;
+  if (!symbol) {
+    return {
+      status: 'struck',
+      claim,
+      failure: 'claim-incomplete',
+      detail: `a \`${claim.kind}\` claim names no symbol to look for`,
+    };
+  }
+
+  const [defs, refs] = await Promise.all([inspector.definitionsOf(symbol), inspector.referencesTo(symbol)]);
+
+  if (claim.kind === 'defines') {
+    const here = at(defs, claim.path);
+    return here.length
+      ? { status: 'verified', claim, ...moved(claim, here) }
+      : {
+          status: 'struck',
+          claim,
+          failure: 'symbol-not-defined-here',
+          detail: elsewhere(symbol, claim.path, defs, 'defined'),
+        };
+  }
+
+  if (claim.kind === 'references') {
+    const here = at(union(defs, refs), claim.path);
+    return here.length
+      ? { status: 'verified', claim, ...moved(claim, here) }
+      : {
+          status: 'struck',
+          claim,
+          failure: 'symbol-not-referenced-here',
+          detail: elsewhere(symbol, claim.path, union(defs, refs), 'referenced'),
+        };
+  }
+
+  // `absent` — the claim is that the symbol is NOT used here. Often the most valuable one in a
+  // plan: "Respondent.tsx never calls installRichTitles" is what settled a whole design question,
+  // and it is also the claim that goes red the moment someone lands the fix, which is correct.
+  const here = at(union(defs, refs), claim.path);
+  return here.length === 0
+    ? { status: 'verified', claim }
+    : {
+        status: 'struck',
+        claim,
+        failure: 'symbol-is-present',
+        detail: `${symbol} IS in ${claim.path} — at line ${here.map((h) => h.line).join(', ')}`,
+      };
+}
+
+/** Where the symbol actually lives, so a struck claim points somewhere useful. */
+function elsewhere(symbol: string, path: string, found: readonly SourceLocation[], verb: string): string {
+  if (found.length === 0) return `${symbol} is ${verb} nowhere that was searched`;
+  const places = [...new Set(found.map((f) => f.path))].slice(0, 3).join(', ');
+  return `${symbol} is not ${verb} in ${path} — it is in ${places}`;
 }
 
 /** Every claim in a step, checked, with the counts the CLI and the UI both render. */

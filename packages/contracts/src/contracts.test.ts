@@ -25,9 +25,10 @@ import {
  */
 
 const claim = {
-  kind: 'location' as const,
+  kind: 'contains' as const,
   text: 'the base class list ends in sm:max-w-lg',
   path: 'src/ui/dialog.tsx',
+  // Recorded so a reader can jump there. Never what the gate checks — see claimSchema.
   line: 65,
   fragment: 'sm:max-w-lg',
 };
@@ -73,6 +74,10 @@ const table: ReadonlyArray<{
       { why: 'an unknown kind would silently skip its checker', value: { ...claim, kind: 'vibes' } },
     ],
   },
+  // Deliberately NOT here: a `defines` claim with no `symbol`. The schema accepts it and the gate
+  // strikes it as `claim-incomplete`. A discriminated union on `kind` could refuse it one layer
+  // earlier, but a zod parse error reaches the user as a path-and-code; the gate's message names
+  // the claim and says what is missing from it. The better message wins.
   {
     name: 'evidence',
     schema: evidenceSchema,

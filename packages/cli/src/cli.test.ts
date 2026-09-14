@@ -236,6 +236,23 @@ const bookPathFor = (taskId: string): string => {
   return join(dir, `${slug}.book.md`);
 };
 
+/**
+ * Fill a scaffolded book: the step prompt gets the claims under test, every other `<…>` gets
+ * filler so no blank remains to stop `verify`.
+ *
+ * Keyed on the placeholder's opening words and its closing `>`, never its full prose. Four tests
+ * broke silently the last time that prose was reworded — the replace simply missed, the claims were
+ * never inserted, and the tests reported the gate failing when the gate had never been handed
+ * anything. A test must fail because behaviour changed, not because a sentence did.
+ */
+const fillBook = (taskId: string, prompt: string): void => {
+  const path = bookPathFor(taskId);
+  const before = readFileSync(path, 'utf8');
+  const filled = before.replace(/<what to do[\s\S]*?>/, prompt);
+  if (filled === before) throw new Error('the step-prompt placeholder was not found — fillBook is stale');
+  writeFileSync(path, filled.replace(/<[^>]+>/g, 'x'));
+};
+
 describe('the whole flow, end to end', () => {
   it('goes setup → discover → plan → verify, and refuses a plan with blanks', async () => {
     expect(await run('setup')).toBe(0);
@@ -263,48 +280,71 @@ describe('the whole flow, end to end', () => {
     await run('discover', 'LGN-2: the dialog caps at 512px, see `src/dialog.tsx`');
     await run('plan', 'LGN-2', '--steps', '1');
 
-    const book = bookPathFor('LGN-2');
-    const filled = readFileSync(book, 'utf8')
-      .replace(/<one line[^>]*>/, 'stop the base capping the width')
-      .replace(/<path this step may touch>/, 'src/dialog.tsx')
-      .replace(/<name each decision[^>]*>/, 'none — decided above')
-      .replace(/<the tempting wrong move[^>]*>/, 'editing the test to make it pass')
-      .replace(
-        /<what to do[\s\S]*?re-derives each claim\.>/,
-        'The cap is at `src/dialog.tsx:2` — `sm:max-w-lg`.',
-      )
-      .replace(/<an observable[^>]*>/, 'the panel measures 896px')
-      .replace(/<what this plan deliberately does not touch[^>]*>/, 'anything outside the dialog')
-      .replace(/<which step must precede which[^>]*>/, 'one step, no order to state');
-    writeFileSync(book, filled);
+    // One of each kind, against the real fixture, through the real ast-grep inspector. Each claim
+    // names its own file: "it contains …" reads fine to a human and is invisible to the parser,
+    // which is deliberate — an unanchored sentence is not a claim.
+    fillBook(
+      'LGN-2',
+      '`src/dialog.tsx` defines `DialogContent`. `src/dialog.tsx` contains `sm:max-w-lg`. ' +
+        '`src/dialog.tsx` calls `cn`. `src/index.ts` does not reference `DialogContent`.',
+    );
 
     lines = [];
     expect(await run('verify', 'LGN-2')).toBe(0);
-    expect(said()).toContain('Every citation holds.');
-    expect(said()).toContain('1/1 claims verified');
+    expect(said()).toContain('Every citation holds');
+    expect(said()).toContain('4/4 claims verified');
   });
 
-  it('strikes a citation that does not hold, and says what was actually there', async () => {
+  it('holds when the cited line has moved, and says where it moved to', async () => {
+    // The failure the old line-anchored gate had by design: adding an import at the top of a file
+    // struck every claim below it, none of which had stopped being true. A gate that cries wolf
+    // when someone runs a formatter is a gate people learn to skip.
+    await run('setup');
+    await run('discover', 'LGN-20: about `src/dialog.tsx`');
+    await run('plan', 'LGN-20', '--steps', '1');
+
+    fillBook('LGN-20', '`DialogContent` is defined in `src/dialog.tsx:1`.');
+
+    // Now shift it down four lines, exactly as adding imports would.
+    const dialog = join(repo, 'src', 'dialog.tsx');
+    writeFileSync(dialog, `${'import { cn } from "./cn.js";\n'.repeat(4)}${readFileSync(dialog, 'utf8')}`);
+
+    lines = [];
+    expect(await run('verify', 'LGN-20')).toBe(0);
+    expect(said()).toContain('Every citation holds');
+    expect(said()).toContain('now at line 5');
+  });
+
+  it('strikes a citation that does not hold, and says where the symbol actually is', async () => {
     await run('setup');
     await run('discover', 'LGN-3: about `src/dialog.tsx`');
     await run('plan', 'LGN-3', '--steps', '1');
 
-    const book = bookPathFor('LGN-3');
-    const filled = readFileSync(book, 'utf8')
-      .replace(/<one line[^>]*>/, 'a wrong claim')
-      .replace(/<path this step may touch>/, 'src/dialog.tsx')
-      .replace(/<name each decision[^>]*>/, 'none')
-      .replace(/<the tempting wrong move[^>]*>/, 'nothing')
-      .replace(/<what to do[\s\S]*?re-derives each claim\.>/, 'See `src/dialog.tsx:2` — `max-w-4xl`.')
-      .replace(/<an observable[^>]*>/, 'it is done')
-      .replace(/<what this plan deliberately does not touch[^>]*>/, 'everything else')
-      .replace(/<which step must precede which[^>]*>/, 'n/a');
-    writeFileSync(book, filled);
+    fillBook('LGN-3', '`src/index.ts` defines `DialogContent`.');
 
     lines = [];
     expect(await run('verify', 'LGN-3')).toBe(1);
     expect(said()).toContain('do not hold');
-    expect(said()).toContain('max-w-4xl');
+    // Not just "wrong" — where it actually is, which is the next thing the reader needs.
+    expect(said()).toContain('it is in src/dialog.tsx');
+  });
+
+  it('strikes a claim of absence the moment the symbol appears', async () => {
+    // The claim that settles design questions — "the respondent never calls this" — and the one
+    // that must go red when someone lands the change, so the plan stops describing the old world.
+    await run('setup');
+    await run('discover', 'LGN-21: about `src/dialog.tsx`');
+    await run('plan', 'LGN-21', '--steps', '1');
+
+    fillBook('LGN-21', '`src/index.ts` does not call `DialogContent`.');
+
+    // True as written. Then someone lands the re-export.
+    expect(await run('verify', 'LGN-21')).toBe(0);
+    writeFileSync(join(repo, 'src', 'index.ts'), 'export { DialogContent } from "./dialog.js";\n');
+
+    lines = [];
+    expect(await run('verify', 'LGN-21')).toBe(1);
+    expect(said()).toContain('IS in src/index.ts');
   });
 
   it('shows the task from the log it wrote', async () => {
@@ -408,6 +448,12 @@ describe('paths that only appear when something is wrong', () => {
     lines = [];
     expect(await run('verify', 'LGN-13')).toBe(0);
     expect(said()).toContain('no citations');
+    // Not an error — an operator step ("rotate the key in QA") has nothing in this repo to cite.
+    // But it must not read as a pass either: "Every citation holds" over a plan with no citations
+    // is exactly the false green this gate exists to prevent.
+    expect(said()).toContain('Nothing was checked');
+    expect(said()).toContain('This is not a pass');
+    expect(said()).not.toContain('Every citation holds');
   });
 
   it('says when a task has a plan but no book beside it', async () => {
@@ -436,13 +482,7 @@ describe('paths that only appear when something is wrong', () => {
     await run('setup');
     await run('discover', 'LGN-16: about `src/dialog.tsx`');
     await run('plan', 'LGN-16', '--steps', '1');
-    const book = bookPathFor('LGN-16');
-    writeFileSync(
-      book,
-      readFileSync(book, 'utf8')
-        .replace(/<what to do[\s\S]*?re-derives each claim\.>/, 'See `src/dialog.tsx:2` — `sm:max-w-lg`.')
-        .replace(/<[^>]+>/g, 'x'),
-    );
+    fillBook('LGN-16', '`src/dialog.tsx` contains `sm:max-w-lg`.');
     await run('verify', 'LGN-16');
     lines = [];
     await run('show', 'LGN-16', '--all');
