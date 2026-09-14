@@ -3,6 +3,7 @@ import { configShow } from './commands/config.js';
 import { discover } from './commands/discover.js';
 import { doctor } from './commands/doctor.js';
 import { plan } from './commands/plan.js';
+import { run } from './commands/run.js';
 import { setup } from './commands/setup.js';
 import { show } from './commands/show.js';
 import { verify } from './commands/verify.js';
@@ -21,6 +22,7 @@ export const HELP = `devflow — turn a task into a plan a developer can read, t
   devflow discover "<task or ticket>"  gather context: rules, code, history
   devflow plan <task>                  render the book; steps left for a human
   devflow verify <task>                send every citation back to the code
+  devflow run <task> [--dry-run]       expand each verified step into a brief
   devflow show [task] [--all]          everything DevFlow knows; latest run by default
   devflow config show                  effective settings, and where each came from
   devflow doctor                       what would stop a run, and how to fix it
@@ -62,6 +64,14 @@ export async function main(
         return 2;
       }
       return plan(env, taskId, typeof flags.steps === 'number' ? flags.steps : 4);
+    }
+    case 'run': {
+      const taskId = positionals[0];
+      if (!taskId) {
+        out('devflow run <task> [--dry-run]');
+        return 2;
+      }
+      return run(env, taskId, flags);
     }
     case 'verify': {
       const taskId = positionals[0];

@@ -2,8 +2,14 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { AstGrepInspector, JsonlRunEventStore, SystemClock } from '@omnitech/devflow-adapters';
-import { type LoadedConfig, loadConfig } from '@omnitech/devflow-core';
+import {
+  AstGrepInspector,
+  JsonlRunEventStore,
+  OpenRouterModelClient,
+  SystemClock,
+} from '@omnitech/devflow-adapters';
+import type { ModelRole } from '@omnitech/devflow-contracts';
+import { type LoadedConfig, loadConfig, type ModelClient } from '@omnitech/devflow-core';
 
 /**
  * The composition root: the one place ports are joined to adapters.
@@ -21,6 +27,14 @@ export interface Env {
   readonly branch: string | undefined;
   readonly verbose: boolean;
   readonly out: (line: string) => void;
+  /**
+   * Constructed lazily, and only by the commands that need it.
+   *
+   * A getter rather than a field because building it reads a credential: `devflow verify` and
+   * `devflow show` must keep working on a machine that has never had an API key, and they would
+   * not if the composition root demanded one to build the environment at all.
+   */
+  readonly model: ModelClient;
 }
 
 /** The repository we are in. Falls back to the working directory outside a checkout. */
@@ -79,7 +93,65 @@ export async function makeEnv(
     branch: branchOf(repoRoot),
     verbose,
     out,
+    get model(): ModelClient {
+      return modelClientFor(config, out);
+    },
   };
+}
+
+/**
+ * The model client, from configuration alone.
+ *
+ * Role → model comes out of `models.roles`; nothing here picks a model. The provider name is read
+ * and checked rather than assumed, so a config naming a provider this build cannot talk to says so
+ * instead of sending the request somewhere unintended.
+ */
+export function modelClientFor(
+  config: LoadedConfig,
+  out: (line: string) => void,
+  /**
+   * Injected only by tests, for the same reason `AstGrepInspector` takes its `parse`: the call
+   * announcement below is the one piece of this function that cannot be reached without a network
+   * call, and a line nobody can exercise is a line nobody knows works.
+   */
+  fetchImpl?: typeof globalThis.fetch,
+): ModelClient {
+  const roles = config.config.models.roles;
+  const providers = new Set(Object.values(roles).map((binding) => binding.provider));
+  const unknown = [...providers].filter((p) => p !== 'openrouter');
+  if (unknown.length) {
+    throw new Error(
+      `this build can only talk to "openrouter"; the configuration asks for ${unknown.map((p) => `"${p}"`).join(', ')}. ` +
+        'Set models.roles.<role>.provider to "openrouter" in .devflow/config.json.',
+    );
+  }
+
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      'OPENROUTER_API_KEY is not set, so no model can be reached. Export it, or use --dry-run to ' +
+        'see what would be sent without sending it.',
+    );
+  }
+
+  const models = Object.fromEntries(
+    Object.entries(roles).map(([role, binding]) => [role, binding.model]),
+  ) as Record<ModelRole, string>;
+
+  return new OpenRouterModelClient({
+    apiKey,
+    models,
+    ...(fetchImpl ? { fetch: fetchImpl } : {}),
+    timeoutMs: config.config.execution.silenceMs,
+    // Every call is announced. A run that spends money silently is a run nobody can audit while it
+    // is happening, which is when it matters.
+    onCall: (call) =>
+      out(
+        `      · ${call.role} ${call.model} attempt ${call.attempt + 1} ${call.ok ? 'ok' : 'retry'}` +
+          ` $${(call.cost.microUsd / 1e6).toFixed(4)} ${(call.ms / 1000).toFixed(1)}s` +
+          (call.detail ? ` — ${call.detail}` : ''),
+      ),
+  });
 }
 
 /** Where DevFlow keeps a task's artefacts inside the repository. */

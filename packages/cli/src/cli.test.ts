@@ -648,3 +648,31 @@ describe('the quieter halves of each branch', () => {
     expect(said()).toContain('no house rules found');
   });
 });
+
+describe('devflow run, through the dispatcher', () => {
+  it('asks for its argument', async () => {
+    lines = [];
+    expect(await run('run')).toBe(2);
+    expect(said()).toContain('devflow run <task>');
+  });
+
+  it('points at plan when the task was never planned', async () => {
+    await run('setup');
+    lines = [];
+    expect(await run('run', 'MISSING')).toBe(2);
+    expect(said()).toContain('devflow plan MISSING');
+  });
+
+  it('does a dry run without a credential, and sends nothing', async () => {
+    // The reason the model client is a lazy getter: `--dry-run` must work on a machine that has
+    // never had an API key, and it would not if building the environment demanded one.
+    await run('setup');
+    await run('discover', 'LGN-30: about `src/dialog.tsx`');
+    await run('plan', 'LGN-30', '--steps', '1');
+    fillBook('LGN-30', '`src/dialog.tsx` defines `DialogContent`.');
+    lines = [];
+    expect(await run('run', 'LGN-30', '--dry-run')).toBe(0);
+    expect(said()).toContain('would send');
+    expect(said()).toContain('nothing was sent');
+  });
+});
