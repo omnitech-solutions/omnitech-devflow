@@ -79,6 +79,10 @@ concepts — changing them would break interoperability with tooling that alread
 
 `--verbose` prints the native terms alongside DevFlow's.
 
+For the same orientation against Mark's Crux — where its fence sits relative to this one, what DevFlow
+should take from it without a framework, and what this repository would look like built on it — see
+[crux-orientation-2026-09-16.md](crux-orientation-2026-09-16.md).
+
 ## Status
 
 Early. The workspace skeleton is in place; packages land per the implementation plan.
